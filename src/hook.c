@@ -347,6 +347,57 @@ static VOID Unfreeze(PFROZEN_THREADS pThreads)
     }
 }
 
+extern int checkhv();
+extern int setDataPagehv(void* pageAddr, void* data);
+extern int activatePagehv(void* pageAddr);
+extern int writeCodePagehv(void* _from, void* _to, size_t bytes);
+extern int deactivatePagehv(void* pageAddr);
+extern int deactivateAllPageshv();
+extern int isPageSplithv(void* pageAddr);
+
+int __forceinline IsInsideVPC_exceptionFilter(LPEXCEPTION_POINTERS ep)
+{
+	PCONTEXT ctx = ep->ContextRecord;
+
+	ctx->Rax = 0; // Not running VPC
+	ctx->Rip += 3; // skip past the "call VPC" opcodes
+	return EXCEPTION_CONTINUE_EXECUTION; // we can safely resume execution since we skipped faulty instruction
+};
+
+int hypervisorSupportPresent() {
+	//return 0;
+	WORD result = 0;
+	__try
+	{
+		result = checkhv();
+	}
+	// The except block shouldn't get triggered if VPC is running!!
+	__except (IsInsideVPC_exceptionFilter(GetExceptionInformation()))
+	{
+	}
+	return result == 1;
+};
+
+//-------------------------------------------------------------------------
+void *hiddenmemcpy(void *dest, void *src, size_t n) {
+	if (hypervisorSupportPresent()) {
+		if (!isPageSplithv(dest)) {
+			setDataPagehv(dest, dest);
+			activatePagehv(dest);
+		}
+		size_t start_range = (size_t)dest, end_range = start_range + n - 1;
+		if ((end_range >> 12) > (start_range >> 12)) {
+			if (!isPageSplithv((void*)end_range)) {
+				setDataPagehv((void*)end_range, (void*)end_range);
+				activatePagehv((void*)end_range);
+			}
+		}
+		writeCodePagehv(src, dest, n);
+		return dest;
+	} else
+	   return memcpy(dest, src, n);
+}
+
 //-------------------------------------------------------------------------
 static MH_STATUS EnableHookLL(UINT pos, BOOL enable)
 {
@@ -366,23 +417,26 @@ static MH_STATUS EnableHookLL(UINT pos, BOOL enable)
 
     if (enable)
     {
-        PJMP_REL pJmp = (PJMP_REL)pPatchTarget;
+		BYTE mem2copy[sizeof(JMP_REL_SHORT) + sizeof(JMP_REL)];
+		PJMP_REL pJmp = (PJMP_REL)mem2copy;//(PJMP_REL)pPatchTarget;
         pJmp->opcode = 0xE9;
         pJmp->operand = (UINT32)((LPBYTE)pHook->pDetour - (pPatchTarget + sizeof(JMP_REL)));
 
         if (pHook->patchAbove)
         {
-            PJMP_REL_SHORT pShortJmp = (PJMP_REL_SHORT)pHook->pTarget;
+			PJMP_REL_SHORT pShortJmp = (PJMP_REL_SHORT)(mem2copy+ sizeof(JMP_REL));//(PJMP_REL_SHORT)pHook->pTarget;
             pShortJmp->opcode = 0xEB;
             pShortJmp->operand = (UINT8)(0 - (sizeof(JMP_REL_SHORT) + sizeof(JMP_REL)));
-        }
-    }
+			hiddenmemcpy(pPatchTarget, mem2copy, sizeof(JMP_REL) + sizeof(JMP_REL_SHORT));
+        } else
+			hiddenmemcpy(pPatchTarget, mem2copy, sizeof(JMP_REL));
+	}
     else
     {
         if (pHook->patchAbove)
-            memcpy(pPatchTarget, pHook->backup, sizeof(JMP_REL) + sizeof(JMP_REL_SHORT));
+			hiddenmemcpy(pPatchTarget, pHook->backup, sizeof(JMP_REL) + sizeof(JMP_REL_SHORT));
         else
-            memcpy(pPatchTarget, pHook->backup, sizeof(JMP_REL));
+			hiddenmemcpy(pPatchTarget, pHook->backup, sizeof(JMP_REL));
     }
 
     VirtualProtect(pPatchTarget, patchSize, oldProtect, &oldProtect);

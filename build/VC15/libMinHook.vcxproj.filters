@@ -52,4 +52,9 @@
       <UniqueIdentifier>{56ddb326-6179-430d-ae19-e13bfd767bfa}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
+  <ItemGroup>
+    <MASM Include="..\..\src\vmcalls.asm">
+      <Filter>Source Files</Filter>
+    </MASM>
+  </ItemGroup>
 </Project>
